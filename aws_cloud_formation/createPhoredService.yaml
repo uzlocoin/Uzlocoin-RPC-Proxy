@@ -1,0 +1,463 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy a uzlocoind intances on AWS Fargate, hosted in a private subnet, but accessible via a public load balancer.
+Parameters:
+  StackName:
+    Type: String
+    Default: UzlocoinRPC
+    Description: The name of the parent Fargate networking stack that you created. Necessary
+                 to locate and reference resources created by that stack.
+  ServiceName:
+    Type: String
+    Default: Uzlocoind
+    Description: Create uzlocoind instances available for public.
+  ImageUrl:
+    Type: String
+    Default: 703473045561.dkr.ecr.us-east-1.amazonaws.com/uzlocoind:latest
+    Description: uzlocoind
+  ContainerPort:
+    Type: Number
+    Default: 6331
+    Description: What port number uzlocoind is using to connection.
+  ContainerHTTPPort:
+    Type: Number
+    Default: 80
+    Description: What port number uzlocoind is using for health check.
+  ContainerRPCPort:
+    Type: Number
+    Default: 6334
+    Description: What port number uzlocoind is using for RPC connections.
+  ContainerCpu:
+    Type: Number
+    Default: 512
+    Description: How much CPU to give the container. 1024 is 1 CPU
+  ContainerMemory:
+    Type: Number
+    Default: 1024
+    Description: How much memory in megabytes to give the container
+  Path:
+    Type: String
+    Default: "/rpc"
+    Description: A path on the public load balancer that this service
+                 should be connected to.
+  Priority:
+    Type: Number
+    Default: 16
+    Description: The priority for the routing rule added to the load balancer.
+                 This only applies if your have multiple services which have been
+                 assigned to different paths on the load balancer.
+  HTTPPriority:
+    Type: Number
+    Default: 15
+    Description: The priority for the routing rule added to the load balancer.
+                 This only applies if your have multiple services which have been
+                 assigned to different paths on the load balancer.
+  PrivRPCPriority:
+     Type: Number
+     Default: 14
+     Description: The priority for the routing rule added to the load balancer.
+                  This only applies if your have multiple services which have been
+                  assigned to different paths on the load balancer.
+  PrivHTTPPriority:
+    Type: Number
+    Default: 13
+    Description: The priority for the routing rule added to the load balancer.
+      This only applies if your have multiple services which have been
+      assigned to different paths on the load balancer.
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: How many copies of the service task to run on the beginning.
+  MinScalingCapacity:
+    Type: Number
+    Default: 1
+    Description: Minimum number copies of the service for scaling activities.
+  MaxScalingCapacity:
+    Type: Number
+    Default: 2
+    Description: Maximum number copies of the service for scaling activities.
+
+# This section will group and rename parameters for user.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    -
+      Label:
+        default: 'Basic Configuration'
+      Parameters:
+      - StackName
+      - ServiceName
+      - ImageUrl
+    -
+      Label:
+        default: 'Network Configuration'
+      Parameters:
+      - ContainerPort
+      - ContainerHTTPPort
+      - ContainerRPCPort
+      - Path
+      - Priority
+      - HTTPPriority
+      - PrivRPCPriority
+      - PrivHTTPPriority
+    -
+      Label:
+        default: 'Task Configuration'
+      Parameters:
+      - ContainerCpu
+      - ContainerMemory
+    -
+      Label:
+        default: 'Scaling Configuration'
+      Parameters:
+      - MinScalingCapacity
+      - MaxScalingCapacity
+      - DesiredCount
+    ParameterLabels:
+      StackName:
+        default: 'Name of basic stack (vpc, load balancers etc)'
+      ServiceName:
+        default: 'Service name'
+      ImageUrl:
+        default: 'ECR Docker image'
+      ContainerPort:
+        default: 'Uzlocoind port (for connection with other public Uzlocoind nodes)'
+      ContainerHTTPPort:
+        default: 'HTTP port'
+      ContainerRPCPort:
+        default: 'RPC port'
+      Path:
+        default: 'Serve rpc on url'
+      Priority:
+        default: 'Public LB Uzlocoind connection priority'
+      HTTPPriority:
+        default: 'Public LB HTTP priority'
+      PrivRPCPriority:
+        default: 'Private LB RPC priority'
+      PrivHTTPPriority:
+        default: 'Private LB http priority'
+      ContainerCpu:
+        default: 'Container CPU in AWS terms'
+      ContainerMemory:
+        default: 'Container memory in MB'
+      MinScalingCapacity:
+        default: 'Minimum number of instances'
+      MaxScalingCapacity:
+        default: 'Maximum number of instances'
+      DesiredCount:
+        default: 'Initialize number of instances'
+
+
+Resources:
+  # The log driver group definition for service.
+  LogDriver:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Join ['/', ['/rpc', !Ref 'ServiceName']]
+      RetentionInDays: 30
+
+  # The task definition. This is a simple metadata description of what
+  # container to run, and what resource requirements it has.
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref 'ServiceName'
+      Cpu: !Ref 'ContainerCpu'
+      Memory: !Ref 'ContainerMemory'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'ECSTaskExecutionRole']]
+      TaskRoleArn:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'ECSTaskS3AccessRole']]
+      ContainerDefinitions:
+        - Name: !Ref 'ServiceName'
+          Cpu: !Ref 'ContainerCpu'
+          Memory: !Ref 'ContainerMemory'
+          Image: !Ref 'ImageUrl'
+          PortMappings:
+            - ContainerPort: !Ref 'ContainerPort'
+            - ContainerPort: !Ref 'ContainerRPCPort'
+            - ContainerPort: !Ref 'ContainerHTTPPort'
+          Environment:
+            - Name: 'AWS_DEFAULT_REGION'
+              Value : !Ref 'AWS::Region'
+            - Name: 'REDIS_HOST'
+              Value:
+                Fn::ImportValue:
+                  !Join [':', [!Ref 'StackName', 'RedisClusterHost']]
+            - Name: 'REDIS_PORT'
+              Value:
+                Fn::ImportValue:
+                  !Join [':', [!Ref 'StackName', 'RedisClusterPort']]
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-group: !Join ['/', ['/rpc', !Ref 'ServiceName']]
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: 'rpc'
+
+  # The service. The service is a resource which allows you to run multiple
+  # copies of a type of task, and gather up their logs and metrics, as well
+  # as monitor the number of running tasks and replace any that have crashed
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - LoadBalancerRule
+      - LoadBalancerHTTPRule
+      - PrivateLoadBalancerRPCRule
+      - PrivateLoadBalancerHTTPRule
+    Properties:
+      ServiceName: !Ref 'ServiceName'
+      # give task time to download necessary data, connect to nodes, update blocks and start web server.
+      HealthCheckGracePeriodSeconds: 150
+      Cluster:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'ClusterName']]
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: !Ref 'DesiredCount'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - Fn::ImportValue:
+                !Join [':', [!Ref 'StackName', 'FargateContainerSecurityGroup']]
+          Subnets:
+            - Fn::ImportValue:
+                !Join [':', [!Ref 'StackName', 'PrivateSubnetOne']]
+            - Fn::ImportValue:
+                !Join [':', [!Ref 'StackName', 'PrivateSubnetTwo']]
+      TaskDefinition: !Ref 'TaskDefinition'
+      LoadBalancers:
+        - ContainerName: !Ref 'ServiceName'
+          ContainerPort: !Ref 'ContainerHTTPPort'
+          TargetGroupArn: !Ref 'TargetHTTPGroup'
+
+  # A target group. This is used for keeping track of all the tasks, and
+  # what IP addresses / port numbers they have. You can query it yourself,
+  # to use the addresses yourself, but most often this target group is just
+  # connected to an application load balancer, or network load balancer, so
+  # it can automatically distribute traffic across all the targets.
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      Name: !Join ['-', [!Ref 'AWS::StackName', !Ref 'ContainerPort']]
+      Port: !Ref 'ContainerPort'
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'VPCId']]
+
+  # Create a rule on the load balancer for routing public Uzlocoind nodes traffic to the target group
+  LoadBalancerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'TargetGroup'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: ['*']
+      ListenerArn:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'PublicListener']]
+      Priority: !Ref 'Priority'
+
+  TargetHTTPGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !Join ['/', [!Ref 'Path', 'ping']]
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetType: ip
+      Name: !Join ['-', [!Ref 'AWS::StackName', !Ref 'ContainerHTTPPort']]
+      Port: !Ref 'ContainerHTTPPort'
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'VPCId']]
+
+  # Create a rule on the load balancer for routing HTTP traffic from internet
+  LoadBalancerHTTPRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'TargetHTTPGroup'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: [!Join ['', [!Ref 'Path', '*']]]
+      ListenerArn:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'PublicHTTPListener']]
+      Priority: !Ref 'HTTPPriority'
+
+  # Create a rule on the load balancer for routing HTTPS traffic from internet
+  LoadBalancerHTTPSRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'TargetHTTPGroup'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: [!Join ['', [!Ref 'Path', '*']]]
+      ListenerArn:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'PublicHTTPSListener']]
+      Priority: !Ref 'HTTPPriority'
+
+  PrivateTargetRPCGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'Priv', !Ref 'ContainerRPCPort']]
+      Port: !Ref 'ContainerRPCPort'
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'VPCId']]
+
+  # Create a rule on the private load balancer for routing rpc traffic from other containers
+  PrivateLoadBalancerRPCRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref 'PrivateTargetRPCGroup'
+          Type: 'forward'
+      Conditions:
+        - Field: path-pattern
+          Values: [!Join ['', [!Ref 'Path', '*']]]
+      ListenerArn:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'PrivateRPCListener']]
+      Priority: !Ref 'PrivRPCPriority'
+
+  PrivateTargetHTTPGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'Priv', !Ref 'ContainerHTTPPort']]
+      Port: !Ref 'ContainerHTTPPort'
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'VPCId']]
+
+  # Create a rule on the private load balancer for routing http traffic from other containers
+  PrivateLoadBalancerHTTPRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - TargetGroupArn: !Ref 'PrivateTargetHTTPGroup'
+        Type: 'forward'
+      Conditions:
+      - Field: path-pattern
+        Values: [!Join ['', [!Ref 'Path', '*']]]
+      ListenerArn:
+        Fn::ImportValue:
+          !Join [':', [!Ref 'StackName', 'PrivateHTTPListener']]
+      Priority: !Ref 'PrivHTTPPriority'
+
+
+  # Configure auto scaling for uzlocoind instances.
+  # Scalable target keep number of uzlocoind instances, between min and max.
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn:
+      - Service
+    Properties:
+      MaxCapacity: !Ref 'MaxScalingCapacity'
+      MinCapacity: !Ref 'MinScalingCapacity'
+      ResourceId:
+        Fn::Join:
+        - "/"
+        - - service
+          - Fn::ImportValue:
+              Fn::Join: [':', [!Ref 'StackName', 'ClusterName']]
+          - !Ref 'ServiceName'
+      RoleARN:
+        Fn::ImportValue:
+          Fn::Join: [':', [!Ref 'StackName', 'ECSAutoScalingRole']]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  # Configure what to do on low CPU usage. In that case 1 instance will be shut down (ScalingAdjustment: -1).
+  ScaleDownPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: ScaleUzlocoindDown
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref 'AutoScalingTarget'
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          ScalingAdjustment: -1
+
+  # Configure what to do on high CPU usage. In that case 2 instance will be created (ScalingAdjustment: 2).
+  ScaleUpPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: ScaleUzlocoindUp
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref 'AutoScalingTarget'
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          ScalingAdjustment: 1
+
+  # Cloud watch alarm which can trigger scale up policy on CPU usage > 80% for 5 min
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale up if CPU > 80% for 5 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '5'
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: '80'
+      AlarmActions:
+      - !Ref 'ScaleUpPolicy'
+      Dimensions:
+      - Name: ServiceName
+        Value: !Ref 'ServiceName'
+      - Name: ClusterName
+        Value:
+          Fn::ImportValue:
+            !Join [':', [!Ref 'StackName', 'ClusterName']]
+
+  # Cloud watch alarm which can trigger scale down policy on CPU usage < 30% for 5 min
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale down if CPU < 30% for 5 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '5'
+      ComparisonOperator: LessThanThreshold
+      Threshold: '30'
+      AlarmActions:
+      - !Ref 'ScaleDownPolicy'
+      Dimensions:
+      - Name: ServiceName
+        Value: !Ref 'ServiceName'
+      - Name: ClusterName
+        Value:
+          Fn::ImportValue:
+            !Join [':', [!Ref 'StackName', 'ClusterName']]
